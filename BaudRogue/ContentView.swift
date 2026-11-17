@@ -44,7 +44,7 @@ struct SavedConnection: Identifiable, Codable, Equatable {
     }
 }
 
-// MARK: - Storage
+// MARK: - Local Storage
 
 enum ConnectionStorage {
     static var fileURL: URL {
@@ -64,7 +64,6 @@ enum ConnectionStorage {
               ) else {
             return []
         }
-
         return saved
     }
 
@@ -141,6 +140,12 @@ enum LibrarySort: String, CaseIterable {
 // MARK: - Main Window
 
 struct ContentView: View {
+    private enum ConnectionStatus {
+        case offline
+        case connected
+        case disconnected
+    }
+
     @AppStorage("libraryFontSize")
     private var libraryFontSize = 14.0
 
@@ -150,12 +155,15 @@ struct ContentView: View {
     @State private var connections = ConnectionStorage.load()
     @State private var selectedConnectionID: UUID?
     @State private var hoveredConnectionID: UUID?
+    @State private var activeConnectionID: UUID?
+    @State private var hoveringConnectionsButton = false
+    @State private var connectionStatus: ConnectionStatus = .offline
     @State private var searchText = ""
 
     @State private var showingEditor = false
     @State private var draft = SavedConnection()
-
     @State private var connectionToDelete: SavedConnection?
+
     @State private var showingImporter = false
     @State private var showingExporter = false
     @State private var exportConnections: [SavedConnection] = []
@@ -164,10 +172,13 @@ struct ContentView: View {
     @State private var pendingImport: [SavedConnection] = []
     @State private var showingImportOptions = false
     @State private var errorMessage: String?
-    @State private var showingConnectNotice = false
 
     private var selectedConnection: SavedConnection? {
         connections.first { $0.id == selectedConnectionID }
+    }
+
+    private var activeConnection: SavedConnection? {
+        connections.first { $0.id == activeConnectionID }
     }
 
     private var displayedConnections: [SavedConnection] {
@@ -209,7 +220,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if connections.isEmpty {
+            if let activeConnection {
+                terminalSession(activeConnection)
+            } else if connections.isEmpty {
                 emptyLibrary
             } else {
                 connectionLibrary
@@ -217,57 +230,76 @@ struct ContentView: View {
 
             Divider()
 
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(.gray)
-                    .frame(width: 8, height: 8)
-
-                Text("Offline")
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Text(
-                    "\(connections.count) \(connections.count == 1 ? "Connection" : "Connections")"
-                )
-                .foregroundStyle(.secondary)
-            }
-            .font(.caption)
-            .padding(12)
+            statusBar
         }
         .navigationTitle(
             "BaudRogue \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")"
         )
         .frame(minWidth: 600, minHeight: 400)
         .toolbar {
-            ToolbarItem {
-                Button {
-                    addConnection()
-                } label: {
-                    Label("Add Connection", systemImage: "plus")
-                }
-                .help("Add Connection (⌘N)")
-            }
-
-            if !connections.isEmpty {
+            if activeConnectionID != nil {
                 ToolbarItem {
-                    Menu {
-                        Picker("Sort By", selection: $sortRaw) {
-                            ForEach(
-                                LibrarySort.allCases,
-                                id: \.rawValue
-                            ) { option in
-                                Text(option.rawValue)
-                                    .tag(option.rawValue)
-                            }
-                        }
+                    Button {
+                        activeConnectionID = nil
+                        connectionStatus = .offline
                     } label: {
-                        Label(
-                            "Sort Connections",
-                            systemImage: "arrow.up.arrow.down"
-                        )
+                        Text("Connections")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(hoveringConnectionsButton ? Color.accentColor : Color.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(
+                                        hoveringConnectionsButton
+                                            ? Color.accentColor.opacity(0.20)
+                                            : Color.primary.opacity(0.07)
+                                    )
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(
+                                        hoveringConnectionsButton
+                                            ? Color.accentColor.opacity(0.65)
+                                            : Color.clear,
+                                        lineWidth: 1
+                                    )
+                            }
                     }
-                    .help("Sort Connections")
+                    .buttonStyle(.plain)
+                    .onHover { hoveringConnectionsButton = $0 }
+                    .help("Connections")
+                }
+            } else {
+                ToolbarItem {
+                    Button {
+                        addConnection()
+                    } label: {
+                        Label("Add Connection", systemImage: "plus")
+                    }
+                    .help("Add Connection (⌘N)")
+                }
+
+                if !connections.isEmpty {
+                    ToolbarItem {
+                        Menu {
+                            Picker("Sort By", selection: $sortRaw) {
+                                ForEach(
+                                    LibrarySort.allCases,
+                                    id: \.rawValue
+                                ) { option in
+                                    Text(option.rawValue)
+                                        .tag(option.rawValue)
+                                }
+                            }
+                        } label: {
+                            Label(
+                                "Sort Connections",
+                                systemImage: "arrow.up.arrow.down"
+                            )
+                        }
+                        .help("Sort Connections")
+                    }
                 }
             }
         }
@@ -281,7 +313,9 @@ struct ContentView: View {
             isPresented: Binding(
                 get: { connectionToDelete != nil },
                 set: {
-                    if !$0 { connectionToDelete = nil }
+                    if !$0 {
+                        connectionToDelete = nil
+                    }
                 }
             )
         ) {
@@ -295,6 +329,10 @@ struct ContentView: View {
                         selectedConnectionID = nil
                     }
 
+                    if activeConnectionID == connectionToDelete.id {
+                        activeConnectionID = nil
+                    }
+
                     persistConnections()
                 }
 
@@ -305,7 +343,7 @@ struct ContentView: View {
                 connectionToDelete = nil
             }
         } message: {
-            Text("This connection will be removed from your library.")
+            Text("This connection will be removed from Connections.")
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -368,7 +406,9 @@ struct ContentView: View {
             isPresented: Binding(
                 get: { errorMessage != nil },
                 set: {
-                    if !$0 { errorMessage = nil }
+                    if !$0 {
+                        errorMessage = nil
+                    }
                 }
             )
         ) {
@@ -377,14 +417,6 @@ struct ContentView: View {
             }
         } message: {
             Text(errorMessage ?? "")
-        }
-        .alert(
-            "SSH Connections Coming Next",
-            isPresented: $showingConnectNotice
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("The SSH terminal engine has not been added yet.")
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -425,8 +457,8 @@ struct ContentView: View {
                 for: BaudRogueAction.connect
             )
         ) { _ in
-            if selectedConnection != nil {
-                showingConnectNotice = true
+            if let selectedConnection {
+                openTerminal(selectedConnection)
             }
         }
         .onReceive(
@@ -456,6 +488,60 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Status Bar
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(connectionStatus == .connected ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+
+            Text(
+                connectionStatus == .connected ? "Connected" :
+                connectionStatus == .disconnected ? "Disconnected" : "Offline"
+            )
+                .foregroundStyle(.secondary)
+
+            if let activeConnection {
+                Text("·")
+                    .foregroundStyle(.secondary)
+
+                Text(activeConnection.name)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer()
+
+            if activeConnectionID == nil {
+                Text(
+                    "\(connections.count) \(connections.count == 1 ? "Connection" : "Connections")"
+                )
+                .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+        .padding(12)
+    }
+
+    // MARK: - Terminal Display
+
+    
+    private func terminalSession(
+        _ connection: SavedConnection
+    ) -> some View {
+        SSHConnectionView(connection: connection) { connected in
+            connectionStatus = connected ? .connected : .disconnected
+        }
+    }
+
+
+    private func openTerminal(_ connection: SavedConnection) {
+        selectedConnectionID = connection.id
+        activeConnectionID = connection.id
+        connectionStatus = .offline
+    }
+
     // MARK: - Empty Library
 
     private var emptyLibrary: some View {
@@ -465,7 +551,9 @@ struct ContentView: View {
                 systemImage: "desktopcomputer"
             )
         } description: {
-            Text("Add a connection or import an existing Connection Library.")
+            Text(
+                "Add a connection or import existing connections."
+            )
         } actions: {
             HStack(spacing: 12) {
                 Button("Add Connection") {
@@ -477,7 +565,10 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity
+        )
     }
 
     // MARK: - Connection Library
@@ -485,7 +576,7 @@ struct ContentView: View {
     private var connectionLibrary: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Connection Library")
+                Text("Connections")
                     .font(.title2.weight(.semibold))
 
                 Spacer()
@@ -498,7 +589,10 @@ struct ContentView: View {
                         Image(systemName: "desktopcomputer")
                             .foregroundStyle(.secondary)
 
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(
+                            alignment: .leading,
+                            spacing: 4
+                        ) {
                             Text(connection.name)
                                 .font(
                                     .system(
@@ -513,7 +607,10 @@ struct ContentView: View {
                             )
                             .font(
                                 .system(
-                                    size: max(11, libraryFontSize - 2)
+                                    size: max(
+                                        11,
+                                        libraryFontSize - 2
+                                    )
                                 )
                             )
                             .foregroundStyle(.secondary)
@@ -523,7 +620,10 @@ struct ContentView: View {
                                 Text(connection.username)
                                     .font(
                                         .system(
-                                            size: max(11, libraryFontSize - 2)
+                                            size: max(
+                                                11,
+                                                libraryFontSize - 2
+                                            )
                                         )
                                     )
                                     .foregroundStyle(.secondary)
@@ -535,7 +635,10 @@ struct ContentView: View {
                                 )
                                 .font(
                                     .system(
-                                        size: max(11, libraryFontSize - 3)
+                                        size: max(
+                                            11,
+                                            libraryFontSize - 3
+                                        )
                                     )
                                 )
                                 .foregroundStyle(.tertiary)
@@ -583,8 +686,7 @@ struct ContentView: View {
                     .contentShape(Rectangle())
                     .tag(connection.id)
                     .onTapGesture(count: 2) {
-                        selectedConnectionID = connection.id
-                        showingConnectNotice = true
+                        openTerminal(connection)
                     }
                     .onHover { hovering in
                         if hovering {
@@ -595,8 +697,7 @@ struct ContentView: View {
                     }
                     .contextMenu {
                         Button("Connect") {
-                            selectedConnectionID = connection.id
-                            showingConnectNotice = true
+                            openTerminal(connection)
                         }
 
                         Button("Edit") {
@@ -615,7 +716,10 @@ struct ContentView: View {
 
                         Divider()
 
-                        Button("Delete", role: .destructive) {
+                        Button(
+                            "Delete",
+                            role: .destructive
+                        ) {
                             connectionToDelete = connection
                         }
                     }
@@ -633,7 +737,9 @@ struct ContentView: View {
             )
             .overlay {
                 if displayedConnections.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
+                    ContentUnavailableView.search(
+                        text: searchText
+                    )
                 }
             }
         }
@@ -646,7 +752,9 @@ struct ContentView: View {
         showingEditor = true
     }
 
-    private func editConnection(_ connection: SavedConnection) {
+    private func editConnection(
+        _ connection: SavedConnection
+    ) {
         selectedConnectionID = connection.id
         draft = connection
         showingEditor = true
@@ -666,7 +774,9 @@ struct ContentView: View {
         showingEditor = false
     }
 
-    private func duplicateConnection(_ connection: SavedConnection) {
+    private func duplicateConnection(
+        _ connection: SavedConnection
+    ) {
         var copy = connection
         copy.id = UUID()
         copy.name += " Copy"
@@ -677,7 +787,9 @@ struct ContentView: View {
         persistConnections()
     }
 
-    private func toggleFavorite(_ connection: SavedConnection) {
+    private func toggleFavorite(
+        _ connection: SavedConnection
+    ) {
         guard let index = connections.firstIndex(where: {
             $0.id == connection.id
         }) else {
@@ -694,10 +806,18 @@ struct ContentView: View {
         showingExporter = true
     }
 
-    private func exportSelectedConnection(_ connection: SavedConnection) {
+    private func exportSelectedConnection(
+        _ connection: SavedConnection
+    ) {
         exportFilename = connection.name
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(
+                of: "/",
+                with: "-"
+            )
+            .replacingOccurrences(
+                of: ":",
+                with: "-"
+            )
 
         exportConnections = [connection]
         showingExporter = true
@@ -706,9 +826,13 @@ struct ContentView: View {
     private func mergeImport(updating: Bool) {
         for item in pendingImport {
             let match = connections.firstIndex {
-                $0.host.caseInsensitiveCompare(item.host) == .orderedSame &&
+                $0.host.caseInsensitiveCompare(
+                    item.host
+                ) == .orderedSame &&
                 $0.port == item.port &&
-                $0.username.caseInsensitiveCompare(item.username) == .orderedSame
+                $0.username.caseInsensitiveCompare(
+                    item.username
+                ) == .orderedSame
             }
 
             if let match {
@@ -732,7 +856,8 @@ struct ContentView: View {
         do {
             try ConnectionStorage.save(connections)
         } catch {
-            errorMessage = "Unable to save connections: \(error.localizedDescription)"
+            errorMessage =
+                "Unable to save connections: \(error.localizedDescription)"
         }
     }
 }
@@ -740,7 +865,8 @@ struct ContentView: View {
 // MARK: - Connection Editor
 
 struct ConnectionEditor: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)
+    private var dismiss
 
     @Binding var connection: SavedConnection
     var onSave: () -> Void
@@ -754,7 +880,9 @@ struct ConnectionEditor: View {
     ) {
         self._connection = connection
         self.onSave = onSave
-        self._original = State(initialValue: connection.wrappedValue)
+        self._original = State(
+            initialValue: connection.wrappedValue
+        )
     }
 
     private var hasUnsavedChanges: Bool {
@@ -772,7 +900,10 @@ struct ConnectionEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(
+            alignment: .leading,
+            spacing: 16
+        ) {
             Text("Connection Settings")
                 .font(.title2.weight(.semibold))
 
@@ -844,18 +975,28 @@ struct ConnectionEditor: View {
         }
         .padding(20)
         .frame(width: 480, height: 530)
-        .interactiveDismissDisabled(hasUnsavedChanges)
+        .interactiveDismissDisabled(
+            hasUnsavedChanges
+        )
         .confirmationDialog(
             "Discard Unsaved Changes?",
             isPresented: $showingDiscardConfirmation
         ) {
-            Button("Discard Changes", role: .destructive) {
+            Button(
+                "Discard Changes",
+                role: .destructive
+            ) {
                 dismiss()
             }
 
-            Button("Keep Editing", role: .cancel) {}
+            Button(
+                "Keep Editing",
+                role: .cancel
+            ) {}
         } message: {
-            Text("Your changes to this connection have not been saved.")
+            Text(
+                "Your changes to this connection have not been saved."
+            )
         }
     }
 
@@ -879,7 +1020,7 @@ struct BaudRogueSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Connection Library") {
+            Section("Connections") {
                 HStack {
                     Text("Font Size")
 
@@ -916,7 +1057,10 @@ struct BaudRogueSettingsView: View {
                     }
                 }
 
-                Picker("Default Sorting", selection: $sortRaw) {
+                Picker(
+                    "Default Sorting",
+                    selection: $sortRaw
+                ) {
                     ForEach(
                         LibrarySort.allCases,
                         id: \.rawValue
