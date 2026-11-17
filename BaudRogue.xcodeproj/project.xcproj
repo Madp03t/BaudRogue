@@ -10,6 +10,21 @@
       "Base",
     ],
   },
+  "packages": [
+    {
+      "kind": "remote",
+      "repository": "https://github.com/apple/swift-nio-ssh",
+      "version": {
+        "up-to-next-major-version": "0.15.1",
+      },
+    }, {
+      "kind": "remote",
+      "repository": "https://github.com/migueldeicaza/SwiftTerm",
+      "version": {
+        "up-to-next-major-version": "1.5.0",
+      },
+    },
+  ],
   "files": [
     { "kind": "folder", "path": "BaudRogue", "target-membership": [ "BaudRogue" ] },
     {
@@ -30,6 +45,17 @@
         "compile-sources",
         "frameworks",
         "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "SwiftTerm",
+          "product-name": "SwiftTerm",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "swift-nio-ssh",
+          "product-name": "NIOSSH",
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "CODE_SIGN_STYLE": "Automatic",
