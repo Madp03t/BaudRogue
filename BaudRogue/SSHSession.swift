@@ -231,6 +231,8 @@ final class SSHSession {
         port: Int,
         username: String,
         password: String,
+        columns: Int = 80,
+        rows: Int = 24,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         reportedDisconnected = false
@@ -345,8 +347,8 @@ final class SSHSession {
                     let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
                         wantReply: true,
                         term: "xterm",
-                        terminalCharacterWidth: 80,
-                        terminalRowHeight: 24,
+                        terminalCharacterWidth: max(1, columns),
+                        terminalRowHeight: max(1, rows),
                         terminalPixelWidth: 0,
                         terminalPixelHeight: 0,
                         terminalModes: SSHTerminalModes([:])
@@ -423,6 +425,28 @@ final class SSHSession {
         reportedDisconnected = true
         onDisconnected?()
         disconnect()
+    }
+
+    // MARK: - Update Remote Terminal Size
+
+    func resizeTerminal(columns: Int, rows: Int) {
+        guard let channel = sessionChannel,
+              channel.isActive else {
+            return
+        }
+
+        let request = SSHChannelRequestEvent.WindowChangeRequest(
+            terminalCharacterWidth: max(1, columns),
+            terminalRowHeight: max(1, rows),
+            terminalPixelWidth: 0,
+            terminalPixelHeight: 0
+        )
+
+        channel.triggerUserOutboundEvent(request).whenFailure { [weak self] error in
+            DispatchQueue.main.async {
+                self?.onError?(error)
+            }
+        }
     }
 
     // MARK: - Send Keyboard Input

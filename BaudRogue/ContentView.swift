@@ -8,6 +8,7 @@ struct TerminalPreferences: Codable, Equatable {
     var ansiEnabled = true
     var encoding = "CP437"
     var musicEnabled = false
+    var sizeMode = "Fixed 80 Columns"
 }
 
 struct SavedConnection: Identifiable, Codable, Equatable {
@@ -158,6 +159,8 @@ struct ContentView: View {
     @State private var activeConnectionID: UUID?
     @State private var hoveringConnectionsButton = false
     @State private var connectionStatus: ConnectionStatus = .offline
+    @State private var terminalColumns = 80
+    @State private var terminalRows = 24
     @State private var searchText = ""
 
     @State private var showingEditor = false
@@ -245,24 +248,15 @@ struct ContentView: View {
                     } label: {
                         Text("Connections")
                             .font(.callout.weight(.medium))
-                            .foregroundStyle(hoveringConnectionsButton ? Color.accentColor : Color.primary)
+                            .foregroundStyle(Color.primary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
                             .background {
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(
                                         hoveringConnectionsButton
-                                            ? Color.accentColor.opacity(0.20)
+                                            ? Color.accentColor.opacity(0.12)
                                             : Color.primary.opacity(0.07)
-                                    )
-                            }
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(
-                                        hoveringConnectionsButton
-                                            ? Color.accentColor.opacity(0.65)
-                                            : Color.clear,
-                                        lineWidth: 1
                                     )
                             }
                     }
@@ -518,6 +512,11 @@ struct ContentView: View {
                     "\(connections.count) \(connections.count == 1 ? "Connection" : "Connections")"
                 )
                 .foregroundStyle(.secondary)
+            } else {
+                Text("\(terminalColumns) × \(terminalRows)")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .help("SSH terminal size (columns × rows)")
             }
         }
         .font(.caption)
@@ -530,9 +529,16 @@ struct ContentView: View {
     private func terminalSession(
         _ connection: SavedConnection
     ) -> some View {
-        SSHConnectionView(connection: connection) { connected in
-            connectionStatus = connected ? .connected : .disconnected
-        }
+        SSHConnectionView(
+            connection: connection,
+            onTerminalSizeChanged: { columns, rows in
+                terminalColumns = columns
+                terminalRows = rows
+            },
+            onConnectionChanged: { connected in
+                connectionStatus = connected ? .connected : .disconnected
+            }
+        )
     }
 
 
@@ -540,6 +546,8 @@ struct ContentView: View {
         selectedConnectionID = connection.id
         activeConnectionID = connection.id
         connectionStatus = .offline
+        terminalColumns = 80
+        terminalRows = 24
     }
 
     // MARK: - Empty Library
@@ -950,6 +958,16 @@ struct ConnectionEditor: View {
                         Text("UTF-8").tag("UTF-8")
                     }
 
+                    Picker(
+                        "Terminal Size",
+                        selection: $connection.terminal.sizeMode
+                    ) {
+                        Text("Fixed 80 Columns")
+                            .tag("Fixed 80 Columns")
+                        Text("Automatic")
+                            .tag("Automatic")
+                    }
+
                     Toggle(
                         "ANSI Music",
                         isOn: $connection.terminal.musicEnabled
@@ -974,7 +992,7 @@ struct ConnectionEditor: View {
             }
         }
         .padding(20)
-        .frame(width: 480, height: 530)
+        .frame(width: 480, height: 570)
         .interactiveDismissDisabled(
             hasUnsavedChanges
         )

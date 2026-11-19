@@ -1,5 +1,5 @@
-
 import SwiftUI
+import AppKit
 
 private struct PendingHostApproval: Identifiable {
     let id = UUID()
@@ -12,6 +12,17 @@ private struct PendingHostApproval: Identifiable {
 struct SSHConnectionView: View {
     let connection: SavedConnection
     let onConnectionChanged: (Bool) -> Void
+    let onTerminalSizeChanged: (Int, Int) -> Void
+
+    init(
+        connection: SavedConnection,
+        onTerminalSizeChanged: @escaping (Int, Int) -> Void = { _, _ in },
+        onConnectionChanged: @escaping (Bool) -> Void
+    ) {
+        self.connection = connection
+        self.onTerminalSizeChanged = onTerminalSizeChanged
+        self.onConnectionChanged = onConnectionChanged
+    }
 
     @State private var bridge = TerminalBridge()
     @State private var session: SSHSession?
@@ -22,6 +33,8 @@ struct SSHConnectionView: View {
     @State private var isConnecting = false
     @State private var isConnected = false
 
+    @FocusState private var passwordFocused: Bool
+
     var body: some View {
         BaudRogueTerminalView(bridge: bridge)
             .frame(
@@ -29,8 +42,16 @@ struct SSHConnectionView: View {
                 maxHeight: .infinity
             )
             .onAppear {
+                bridge.encoding = connection.terminal.encoding
+
                 bridge.onInput = { data in
                     session?.send(data)
+                }
+
+                // Report local terminal dimensions only.
+                // Do NOT send an SSH resize request: it disconnects ANetBBS.
+                bridge.onResize = { columns, rows in
+                    onTerminalSizeChanged(max(1, columns), max(1, rows))
                 }
 
                 showingPassword = true
@@ -42,11 +63,19 @@ struct SSHConnectionView: View {
                 session?.disconnect()
                 session = nil
                 bridge.onInput = nil
+                bridge.onResize = nil
 
                 isConnected = false
                 onConnectionChanged(false)
             }
-            .sheet(isPresented: $showingPassword) {
+            .sheet(
+                isPresented: $showingPassword,
+                onDismiss: {
+                    if isConnected {
+                        focusTerminal()
+                    }
+                }
+            ) {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Connect to \(connection.name)")
                         .font(.title2.weight(.semibold))
@@ -61,7 +90,8 @@ struct SSHConnectionView: View {
                         .font(.callout)
 
                     SecureField("SSH Password", text: $password)
-                        .textContentType(.password)
+                        .textContentType(nil)
+                        .focused($passwordFocused)
                         .onSubmit {
                             connect()
                         }
@@ -83,6 +113,9 @@ struct SSHConnectionView: View {
                 }
                 .padding(24)
                 .frame(width: 400)
+                .onAppear {
+                    passwordFocused = true
+                }
             }
             .sheet(item: $pendingApproval) { approval in
                 HostKeyApprovalView(
@@ -112,6 +145,15 @@ struct SSHConnectionView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+    }
+
+    private func focusTerminal() {
+        guard let terminal = bridge.terminalView,
+              let window = terminal.window else {
+            return
+        }
+
+        window.makeFirstResponder(terminal)
     }
 
     private func connect() {
@@ -161,6 +203,10 @@ struct SSHConnectionView: View {
             case .success:
                 isConnected = true
                 onConnectionChanged(true)
+
+                DispatchQueue.main.async {
+                    focusTerminal()
+                }
 
             case .failure(let error):
                 isConnected = false
