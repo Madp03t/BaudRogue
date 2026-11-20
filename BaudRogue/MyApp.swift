@@ -6,6 +6,21 @@ struct MyApp: App {
     @AppStorage("libraryFontSize")
     private var libraryFontSize = 14.0
 
+    @AppStorage("fontControlContext")
+    private var fontControlContext = "Connections"
+
+    private var isTerminal: Bool {
+        fontControlContext == "Terminal"
+    }
+
+    private var isFixedBBS: Bool {
+        fontControlContext == "BBS"
+    }
+
+    private var fontLabel: String {
+        isTerminal ? "Terminal" : "Connections"
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -35,26 +50,23 @@ struct MyApp: App {
             CommandGroup(after: .toolbar) {
                 Divider()
 
-                Button("Increase Library Font Size") {
-                    libraryFontSize = min(
-                        26,
-                        libraryFontSize + 1
-                    )
+                Button("Increase \(fontLabel) Font Size") {
+                    adjustFont(by: 1)
                 }
                 .keyboardShortcut("+", modifiers: .command)
+                .disabled(isFixedBBS)
 
-                Button("Decrease Library Font Size") {
-                    libraryFontSize = max(
-                        11,
-                        libraryFontSize - 1
-                    )
+                Button("Decrease \(fontLabel) Font Size") {
+                    adjustFont(by: -1)
                 }
                 .keyboardShortcut("-", modifiers: .command)
+                .disabled(isFixedBBS)
 
-                Button("Reset Library Font Size") {
-                    libraryFontSize = 14
+                Button("Reset \(fontLabel) Font Size") {
+                    resetFont()
                 }
                 .keyboardShortcut("0", modifiers: .command)
+                .disabled(isFixedBBS)
             }
 
             CommandMenu("Connection") {
@@ -82,6 +94,29 @@ struct MyApp: App {
 
         Settings {
             BaudRogueSettingsView()
+        }
+    }
+
+    private func adjustFont(by amount: Double) {
+        if isTerminal {
+            NotificationCenter.default.post(
+                name: Notification.Name("BaudRogue.adjustTerminalFont"),
+                object: nil,
+                userInfo: ["amount": amount]
+            )
+        } else {
+            libraryFontSize = min(
+                26,
+                max(11, libraryFontSize + amount)
+            )
+        }
+    }
+
+    private func resetFont() {
+        if isTerminal {
+            send(Notification.Name("BaudRogue.resetTerminalFont"))
+        } else {
+            libraryFontSize = 14
         }
     }
 

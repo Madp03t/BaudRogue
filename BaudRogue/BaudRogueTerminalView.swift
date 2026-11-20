@@ -65,6 +65,11 @@ final class TerminalBridge {
 
 final class BaudRogueTerminalContainer: NSView {
     let terminalView: TerminalView
+    let bridge: TerminalBridge
+
+    private var sizeReportScheduled = false
+    private var lastReportedColumns = 0
+    private var lastReportedRows = 0
 
     var fixedSize = true {
         didSet {
@@ -74,12 +79,20 @@ final class BaudRogueTerminalContainer: NSView {
         }
     }
 
-    // Remember the original font size for automatic-mode restoration.
-    private let baseFontSize: CGFloat = 14
+    // Only Automatic SSH mode uses the per-connection font size.
+    var automaticFontSize: CGFloat = 14 {
+        didSet {
+            if oldValue != automaticFontSize {
+                needsLayout = true
+            }
+        }
+    }
+
     private var fittedFontSize: CGFloat = 14
 
-    init(terminalView: TerminalView) {
+    init(terminalView: TerminalView, bridge: TerminalBridge) {
         self.terminalView = terminalView
+        self.bridge = bridge
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -129,18 +142,44 @@ final class BaudRogueTerminalContainer: NSView {
                 height: desired.height
             )
         } else {
-            if abs(terminalView.font.pointSize - baseFontSize) >= 0.5 {
-                fittedFontSize = baseFontSize
+            // Keep the user-selected SSH font size when the window resizes.
+            let preferred = min(26, max(11, automaticFontSize))
+            if abs(terminalView.font.pointSize - preferred) >= 0.5 {
                 terminalView.font = NSFont.monospacedSystemFont(
-                    ofSize: baseFontSize,
+                    ofSize: preferred,
                     weight: .regular
                 )
             }
             // Automatic mode follows the available view size.
             terminalView.frame = bounds
         }
+
+        // SwiftTerm may not notify its delegate for a view-driven resize.
+        // Read the real character grid after AppKit has applied the frame.
+        scheduleSizeReport()
     }
 
+    private func scheduleSizeReport() {
+        guard !sizeReportScheduled else { return }
+        sizeReportScheduled = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sizeReportScheduled = false
+
+            let dimensions = self.terminalView.terminalDimensions
+            let columns = dimensions.cols
+            let rows = dimensions.rows
+
+            guard columns > 0, rows > 0 else { return }
+            guard columns != self.lastReportedColumns ||
+                  rows != self.lastReportedRows else { return }
+
+            self.lastReportedColumns = columns
+            self.lastReportedRows = rows
+            self.bridge.onResize?(columns, rows)
+        }
+    }
 }
 
 // MARK: - SwiftUI Terminal View
@@ -148,6 +187,7 @@ final class BaudRogueTerminalContainer: NSView {
 struct BaudRogueTerminalView: NSViewRepresentable {
     var bridge = TerminalBridge()
     var sizeMode = "Fixed 80 Columns"
+    var fontSize: Double = 14
 
     func makeCoordinator() -> Coordinator {
         Coordinator(bridge: bridge)
@@ -164,10 +204,12 @@ struct BaudRogueTerminalView: NSViewRepresentable {
         terminal.resize(cols: 80, rows: 24)
 
         let container = BaudRogueTerminalContainer(
-            terminalView: terminal
+            terminalView: terminal,
+            bridge: bridge
         )
 
         container.fixedSize = sizeMode != "Automatic"
+        container.automaticFontSize = CGFloat(fontSize)
         bridge.terminalView = terminal
 
         return container
@@ -178,6 +220,7 @@ struct BaudRogueTerminalView: NSViewRepresentable {
         context: Context
     ) {
         nsView.fixedSize = sizeMode != "Automatic"
+        nsView.automaticFontSize = CGFloat(fontSize)
         nsView.needsLayout = true
         bridge.terminalView = nsView.terminalView
     }

@@ -9,6 +9,8 @@ struct TerminalPreferences: Codable, Equatable {
     var encoding = "CP437"
     var musicEnabled = false
     var sizeMode = "Fixed 80 Columns"
+    // Optional so existing saved connections decode without migration.
+    var fontSize: Double? = nil
 }
 
 struct SavedConnection: Identifiable, Codable, Equatable {
@@ -153,6 +155,9 @@ struct ContentView: View {
     @AppStorage("librarySort")
     private var sortRaw = LibrarySort.favorites.rawValue
 
+    @AppStorage("fontControlContext")
+    private var fontControlContext = "Connections"
+
     @State private var connections = ConnectionStorage.load()
     @State private var selectedConnectionID: UUID?
     @State private var hoveredConnectionID: UUID?
@@ -239,6 +244,12 @@ struct ContentView: View {
             "BaudRogue \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")"
         )
         .frame(minWidth: 600, minHeight: 400)
+        .onAppear {
+            updateFontControlContext()
+        }
+        .onChange(of: activeConnectionID) { _, _ in
+            updateFontControlContext()
+        }
         .toolbar {
             if activeConnectionID != nil {
                 ToolbarItem {
@@ -535,6 +546,14 @@ struct ContentView: View {
                 terminalColumns = columns
                 terminalRows = rows
             },
+            onTerminalFontSizeChanged: { newSize in
+                guard let index = connections.firstIndex(where: {
+                    $0.id == connection.id
+                }) else { return }
+
+                connections[index].terminal.fontSize = newSize
+                persistConnections()
+            },
             onConnectionChanged: { connected in
                 connectionStatus = connected ? .connected : .disconnected
             }
@@ -548,6 +567,18 @@ struct ContentView: View {
         connectionStatus = .offline
         terminalColumns = 80
         terminalRows = 24
+        updateFontControlContext()
+    }
+
+    private func updateFontControlContext() {
+        guard let activeConnection else {
+            fontControlContext = "Connections"
+            return
+        }
+
+        fontControlContext = activeConnection.terminal.sizeMode == "Automatic"
+            ? "Terminal"
+            : "BBS"
     }
 
     // MARK: - Empty Library

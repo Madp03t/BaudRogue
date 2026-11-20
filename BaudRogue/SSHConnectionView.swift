@@ -13,14 +13,17 @@ struct SSHConnectionView: View {
     let connection: SavedConnection
     let onConnectionChanged: (Bool) -> Void
     let onTerminalSizeChanged: (Int, Int) -> Void
+    let onTerminalFontSizeChanged: (Double) -> Void
 
     init(
         connection: SavedConnection,
         onTerminalSizeChanged: @escaping (Int, Int) -> Void = { _, _ in },
+        onTerminalFontSizeChanged: @escaping (Double) -> Void = { _ in },
         onConnectionChanged: @escaping (Bool) -> Void
     ) {
         self.connection = connection
         self.onTerminalSizeChanged = onTerminalSizeChanged
+        self.onTerminalFontSizeChanged = onTerminalFontSizeChanged
         self.onConnectionChanged = onConnectionChanged
     }
 
@@ -32,29 +35,60 @@ struct SSHConnectionView: View {
     @State private var errorMessage: String?
     @State private var isConnecting = false
     @State private var isConnected = false
+    @State private var terminalColumns = 80
+    @State private var terminalRows = 24
+    @State private var sshFontSize = 14.0
 
     @FocusState private var passwordFocused: Bool
 
     var body: some View {
-        BaudRogueTerminalView(bridge: bridge)
+        BaudRogueTerminalView(
+            bridge: bridge,
+            sizeMode: connection.terminal.sizeMode,
+            fontSize: sshFontSize
+        )
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity
             )
             .onAppear {
                 bridge.encoding = connection.terminal.encoding
+                sshFontSize = connection.terminal.fontSize ?? 14
 
                 bridge.onInput = { data in
                     session?.send(data)
                 }
 
-                // Report local terminal dimensions only.
-                // Do NOT send an SSH resize request: it disconnects ANetBBS.
                 bridge.onResize = { columns, rows in
-                    onTerminalSizeChanged(max(1, columns), max(1, rows))
+                    let safeColumns = max(1, columns)
+                    let safeRows = max(1, rows)
+                    terminalColumns = safeColumns
+                    terminalRows = safeRows
+                    onTerminalSizeChanged(safeColumns, safeRows)
+
+                    // BBS mode never sends resize requests to the server.
+                    // Automatic mode is intended for regular SSH administration.
+                    if connection.terminal.sizeMode == "Automatic" && isConnected {
+                        session?.resizeTerminal(columns: safeColumns, rows: safeRows)
+                    }
                 }
 
                 showingPassword = true
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: Notification.Name("BaudRogue.adjustTerminalFont")
+            )) { notification in
+                guard connection.terminal.sizeMode == "Automatic",
+                      let amount = notification.userInfo?["amount"] as? Double else {
+                    return
+                }
+                updateSSHFontSize(sshFontSize + amount)
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: Notification.Name("BaudRogue.resetTerminalFont")
+            )) { _ in
+                guard connection.terminal.sizeMode == "Automatic" else { return }
+                updateSSHFontSize(14)
             }
             .onDisappear {
                 pendingApproval?.respond(false)
@@ -147,6 +181,15 @@ struct SSHConnectionView: View {
             }
     }
 
+    private func updateSSHFontSize(_ requestedSize: Double) {
+        let newSize = min(26, max(11, requestedSize))
+        guard newSize != sshFontSize else { return }
+
+        sshFontSize = newSize
+        onTerminalFontSizeChanged(newSize)
+        // The terminal view applies this value in Automatic mode.
+    }
+
     private func focusTerminal() {
         guard let terminal = bridge.terminalView,
               let window = terminal.window else {
@@ -203,6 +246,13 @@ struct SSHConnectionView: View {
             case .success:
                 isConnected = true
                 onConnectionChanged(true)
+
+                if connection.terminal.sizeMode == "Automatic" {
+                    newSession.resizeTerminal(
+                        columns: terminalColumns,
+                        rows: terminalRows
+                    )
+                }
 
                 DispatchQueue.main.async {
                     focusTerminal()
