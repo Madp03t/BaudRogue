@@ -165,9 +165,14 @@ nonisolated final class BaudRogueSSHDataHandler:
     typealias InboundIn = SSHChannelData
 
     private let onReceive: (Data) -> Void
+    private let onShellExit: () -> Void
 
-    init(onReceive: @escaping (Data) -> Void) {
+    init(
+        onReceive: @escaping (Data) -> Void,
+        onShellExit: @escaping () -> Void
+    ) {
         self.onReceive = onReceive
+        self.onShellExit = onShellExit
     }
 
     func channelRead(
@@ -187,6 +192,18 @@ nonisolated final class BaudRogueSSHDataHandler:
         case .fileRegion:
             break
         }
+    }
+
+    func userInboundEventTriggered(
+        context: ChannelHandlerContext,
+        event: Any
+    ) {
+        // SSH servers send exit-status when a shell finishes normally.
+        // This is different from an interrupted transport connection.
+        if event is SSHChannelRequestEvent.ExitStatus {
+            onShellExit()
+        }
+        context.fireUserInboundEventTriggered(event)
     }
 
     func errorCaught(
@@ -209,6 +226,9 @@ final class SSHSession {
     private let approvalRouter = SSHHostApprovalRouter()
 
     private var reportedDisconnected = false
+
+    // True after the server reports that its shell has exited.
+    private(set) var endedNormally = false
 
     var onError: ((Error) -> Void)?
     var onOutput: ((Data) -> Void)?
@@ -236,6 +256,7 @@ final class SSHSession {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         reportedDisconnected = false
+        endedNormally = false
 
         let group = MultiThreadedEventLoopGroup(
             numberOfThreads: 1
@@ -324,13 +345,18 @@ final class SSHSession {
                         )
                     }
 
-                    let dataHandler = BaudRogueSSHDataHandler {
-                        [weak self] receivedData in
-
-                        DispatchQueue.main.async {
-                            self?.onOutput?(receivedData)
+                    let dataHandler = BaudRogueSSHDataHandler(
+                        onReceive: { [weak self] receivedData in
+                            DispatchQueue.main.async {
+                                self?.onOutput?(receivedData)
+                            }
+                        },
+                        onShellExit: { [weak self] in
+                            DispatchQueue.main.async {
+                                self?.endedNormally = true
+                            }
                         }
-                    }
+                    )
 
                     return childChannel.pipeline.addHandler(
                         dataHandler

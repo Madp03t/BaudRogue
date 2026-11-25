@@ -38,6 +38,12 @@ struct SSHConnectionView: View {
     @State private var terminalColumns = 80
     @State private var terminalRows = 24
     @State private var sshFontSize = 14.0
+    @State private var showingConnectionLost = false
+    @State private var showingSessionEnded = false
+    @State private var reconnectAfterAlert = false
+    @State private var closingView = false
+    @State private var hasEstablishedConnection = false
+    @State private var sessionToken: UUID?
 
     @FocusState private var passwordFocused: Bool
 
@@ -52,6 +58,7 @@ struct SSHConnectionView: View {
                 maxHeight: .infinity
             )
             .onAppear {
+                closingView = false
                 bridge.encoding = connection.terminal.encoding
                 sshFontSize = connection.terminal.fontSize ?? 14
 
@@ -91,11 +98,13 @@ struct SSHConnectionView: View {
                 updateSSHFontSize(14)
             }
             .onDisappear {
+                closingView = true
                 pendingApproval?.respond(false)
                 pendingApproval = nil
 
                 session?.disconnect()
                 session = nil
+                sessionToken = nil
                 bridge.onInput = nil
                 bridge.onResize = nil
 
@@ -150,6 +159,90 @@ struct SSHConnectionView: View {
                 .onAppear {
                     passwordFocused = true
                 }
+            }
+            .sheet(
+                isPresented: $showingConnectionLost,
+                onDismiss: {
+                    if reconnectAfterAlert && !closingView {
+                        reconnectAfterAlert = false
+                        showingPassword = true
+                    }
+                }
+            ) {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(Color.yellow)
+                            .font(.title2)
+
+                        Text("Connection Lost")
+                            .font(.title2.weight(.semibold))
+                    }
+
+                    Text("The SSH connection to \(connection.name) was unexpectedly disconnected.")
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 12) {
+                        Button("Reconnect to Last") {
+                            reconnectAfterAlert = true
+                            showingConnectionLost = false
+                        }
+                        .keyboardShortcut(.defaultAction)
+
+                        Button("Saved Connections") {
+                            showingConnectionLost = false
+                            NotificationCenter.default.post(
+                                name: Notification.Name("BaudRogue.showConnections"),
+                                object: nil
+                            )
+                        }
+                    }
+                }
+                .padding(24)
+                .frame(width: 460)
+                .interactiveDismissDisabled()
+            }
+            .sheet(
+                isPresented: $showingSessionEnded,
+                onDismiss: {
+                    if reconnectAfterAlert && !closingView {
+                        reconnectAfterAlert = false
+                        showingPassword = true
+                    }
+                }
+            ) {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.green)
+                            .font(.title2)
+
+                        Text("Session Ended")
+                            .font(.title2.weight(.semibold))
+                    }
+
+                    Text("The SSH session with \(connection.name) has ended normally.")
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 12) {
+                        Button("Reconnect") {
+                            reconnectAfterAlert = true
+                            showingSessionEnded = false
+                        }
+                        .keyboardShortcut(.defaultAction)
+
+                        Button("Saved Connections") {
+                            showingSessionEnded = false
+                            NotificationCenter.default.post(
+                                name: Notification.Name("BaudRogue.showConnections"),
+                                object: nil
+                            )
+                        }
+                    }
+                }
+                .padding(24)
+                .frame(width: 460)
+                .interactiveDismissDisabled()
             }
             .sheet(item: $pendingApproval) { approval in
                 HostKeyApprovalView(
@@ -211,7 +304,12 @@ struct SSHConnectionView: View {
         isConnected = false
 
         let newSession = SSHSession()
+        let token = UUID()
+        sessionToken = token
         session = newSession
+        hasEstablishedConnection = false
+        showingConnectionLost = false
+        showingSessionEnded = false
 
         newSession.onOutput = { data in
             bridge.receive(data)
@@ -229,9 +327,21 @@ struct SSHConnectionView: View {
         }
 
         newSession.onDisconnected = {
+            guard sessionToken == token else { return }
+
+            let wasEstablished = hasEstablishedConnection && !closingView
+            let unexpectedDrop = wasEstablished && !newSession.endedNormally
+            let normalExit = wasEstablished && newSession.endedNormally
+            hasEstablishedConnection = false
             isConnecting = false
             isConnected = false
             onConnectionChanged(false)
+
+            if unexpectedDrop {
+                showingConnectionLost = true
+            } else if normalExit {
+                showingSessionEnded = true
+            }
         }
 
         newSession.connect(
@@ -240,10 +350,12 @@ struct SSHConnectionView: View {
             username: connection.username,
             password: suppliedPassword
         ) { result in
+            guard sessionToken == token, !closingView else { return }
             isConnecting = false
 
             switch result {
             case .success:
+                hasEstablishedConnection = true
                 isConnected = true
                 onConnectionChanged(true)
 
@@ -259,6 +371,7 @@ struct SSHConnectionView: View {
                 }
 
             case .failure(let error):
+                hasEstablishedConnection = false
                 isConnected = false
                 onConnectionChanged(false)
                 errorMessage = error.localizedDescription

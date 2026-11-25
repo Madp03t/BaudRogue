@@ -425,6 +425,14 @@ struct ContentView: View {
         }
         .onReceive(
             NotificationCenter.default.publisher(
+                for: Notification.Name("BaudRogue.showConnections")
+            )
+        ) { _ in
+            activeConnectionID = nil
+            connectionStatus = .offline
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
                 for: BaudRogueAction.add
             )
         ) { _ in
